@@ -1,256 +1,198 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useCallback, useContext } from 'react';
 import { 
   View, 
   Text, 
   StyleSheet, 
   FlatList, 
+  Image, 
+  TouchableOpacity,
   ActivityIndicator, 
-  Alert 
+  RefreshControl,
+  Alert
 } from 'react-native';
-import * as Location from 'expo-location'; // Install this package!
-import colors from '../../constants/colours';
+import { Ionicons } from '@expo/vector-icons';
 import HomeHeader from '../../components/HomeHeader'; 
-import ClubCard from '../../components/ClubCard'; 
-import CustomModal from '../../components/CustomModal';
+import { clubApi } from '../../services/ApiService';
+import colors from '../../constants/colours'; 
+import { UserContext } from '../../context/UserContext'; 
 
-// --- MOCK DATA (In real app, this comes from backend based on lat/long) ---
-const MOCK_NEARBY_CLUBS = [
-  {
-    id: '1',
-    name: 'Club Onyx',
-    address: 'Koramangala, 5th Block',
-    distance: '0.8', // km
-    price: '500',
-    images: [
-      'https://images.unsplash.com/photo-1570872626485-d8ffea69f463?q=80&w=800&auto=format&fit=crop',
-      'https://images.unsplash.com/photo-1566737236500-c8ac43014a67?q=80&w=800&auto=format&fit=crop'
-    ]
-  },
-  {
-    id: '2',
-    name: 'Skyye High',
-    address: 'UB City, Vittal Mallya Rd',
-    distance: '2.4',
-    price: '500',
-    images: [
-      'https://images.unsplash.com/photo-1514525253440-b393452e8d26?q=80&w=800&auto=format&fit=crop',
-      'https://images.unsplash.com/photo-1576675784201-0e142b423952?q=80&w=800&auto=format&fit=crop'
-    ]
-  },
-];
-
-export default function ManHomeScreen() {
-  const [location, setLocation] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState(null);
+export default function ManHomeScreen({ navigation }) {
   const [clubs, setClubs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   
-  // State for Booking Confirmation
-  const [selectedClub, setSelectedClub] = useState(null);
+  // Pull locations from context
+  const { userLocation, exploringLocation } = useContext(UserContext);
+
+  const loadClubs = async () => {
+    if (!exploringLocation) return;
+    try {
+      // Fetch clubs using the coordinates of the selected operational area
+      const data = await clubApi.getClubs(exploringLocation.lat, exploringLocation.lng);
+      
+      const sortedClubs = data.sort((a, b) => {
+        if (a.isPromoted && !b.isPromoted) return -1; 
+        if (!a.isPromoted && b.isPromoted) return 1;  
+        return 0; 
+      });
+
+      setClubs(sortedClubs);
+    } catch (error) {
+      console.error("Failed to load clubs", error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
-    (async () => {
-      console.log("Requesting permissions...");
-      let { status } = await Location.requestForegroundPermissionsAsync();
+    setLoading(true);
+    loadClubs();
+  }, [exploringLocation]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    loadClubs();
+  }, [exploringLocation]);
+
+  const handleClubPress = async (club) => {
+    // 1. Ensure GPS is available before allowing a booking request
+    if (!userLocation) {
+      Alert.alert("Location Required", "Please allow GPS access to join a queue.");
+      return;
+    }
+
+    try {
+      console.log(`Creating request for Club ID: ${club.id}`);
       
-      if (status !== 'granted') {
-        setErrorMsg('Permission to access location was denied');
-        setLoading(false);
-        return;
-      }
-      console.log("Location permission granted.");
-
-      try {
-        // 1. Try to get actual location with a 5-second timeout
-        // fast: true is much better for testing on android
-        let location = await Location.getCurrentPositionAsync({ 
-           accuracy: Location.Accuracy.Balanced,
-           timeout: 5000 
-        });
+      // 2. Pass EXACT GPS location to the backend for distance validation
+      const response = await clubApi.createRequest(club.id, userLocation.lat, userLocation.lng);
+      
+      navigation.navigate('WaitingScreen', { 
+        clubData: club, 
+        requestData: response 
+      });
+      
+    } catch (error) {
+      if (error.response && error.response.status === 400) {
+        const serverMessage = error.response.data?.message || "Request failed.";
         
-        console.log("User Location:", location);
-        setLocation(location);
-      } catch (error) {
-        console.warn("Could not fetch location (likely emulator issue). Using Mock Location.");
-        
-        // 2. FALLBACK: If it fails/times out, use a fake Bangalore location
-        // This ensures your UI never gets stuck loading!
-        const mockLocation = {
-          coords: {
-            latitude: 12.9716, 
-            longitude: 77.5946 
-          }
-        };
-        setLocation(mockLocation);
+        if (serverMessage.toLowerCase().includes("funds") || serverMessage.toLowerCase().includes("balance")) {
+            Alert.alert("Payment Failed", serverMessage, [
+                { text: "Add Money", onPress: () => navigation.navigate('Wallet') },
+                { text: "Cancel", style: "cancel" }
+            ]);
+        } else {
+            // General backend rejection (like distance validation failure)
+            Alert.alert("Cannot Join", serverMessage);
+        }
+      } else {
+        Alert.alert("Error", "Could not connect to the server.");
       }
-
-      // 3. Continue to fetch clubs...
-      setTimeout(() => {
-        setClubs(MOCK_NEARBY_CLUBS);
-        setLoading(false);
-      }, 1000);
-
-    })();
-  }, []);
-
-  const handleBookPress = (club) => {
-    setSelectedClub(club);
+    }
   };
 
-  const confirmBooking = () => {
-    // TODO: Deduct Wallet Logic
-    setSelectedClub(null);
-    Alert.alert("Success", "Entry confirmed! Show your QR code at the gate.");
-  };
+  const renderClubItem = ({ item }) => (
+    <View style={styles.card}>
+      <Image source={{ uri: item.imageUrl || 'https://via.placeholder.com/400x200' }} style={styles.cardImage} />
+      <View style={styles.cardOverlay} />
+
+      <View style={styles.cardContent}>
+        <View style={styles.cardHeader}>
+          <Text style={styles.clubName} numberOfLines={2}>{item.name}</Text>
+          {item.isPromoted && (
+            <View style={styles.promotedBadge}>
+              <Ionicons name="sparkles" size={10} color={colors.promoted} style={{ marginRight: 4 }} />
+              <Text style={styles.promotedText}>Promoted</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.cardFooter}>
+          <View style={styles.leftFooter}>
+            <View style={styles.priceContainer}>
+              <Text style={styles.priceLabel}>Entry</Text>
+              <Text style={styles.priceValue}>₹{item.currentPrice}</Text>
+            </View>
+            <View style={styles.distanceContainer}>
+               <Ionicons name="location-sharp" size={14} color={colors.textSecondary} />
+               <Text style={styles.distanceText}>{item.distance || 'Nearby'}</Text>
+            </View>
+          </View>
+
+          <TouchableOpacity style={styles.joinButton} activeOpacity={0.7} onPress={() => handleClubPress(item)}>
+             <Text style={styles.joinText}>Join</Text>
+             <Ionicons name="arrow-forward" size={16} color={colors.white} />
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+
+  // Show loading state if Context is still initializing
+  if (!exploringLocation) {
+     return (
+       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+         <ActivityIndicator size="large" color={colors.primary} />
+       </View>
+     );
+  }
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <HomeHeader/>
-      
-      {/* Main Content */}
+      <HomeHeader />
       <View style={styles.content}>
+        <Text style={styles.sectionTitle}>Clubs in {exploringLocation.name}</Text>
         
-        {/* Header Text */}
-        <View style={styles.listHeader}>
-          <Text style={styles.heading}>Tonight's Vibe</Text>
-          {location && <Text style={styles.subHeading}>Showing clubs near you</Text>}
-        </View>
-
-        {/* Loading State */}
         {loading ? (
-          <View style={styles.centerContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Locating nearby hotspots...</Text>
+          <View style={styles.loaderContainer}>
+             <ActivityIndicator size="large" color={colors.primary} />
           </View>
-        ) : errorMsg ? (
-          <View style={styles.centerContainer}>
-            <Text style={styles.errorText}>{errorMsg}</Text>
+        ) : clubs.length === 0 ? (
+          <View style={styles.emptyContainer}>
+             <Ionicons name="beer-outline" size={48} color={colors.textSecondary} />
+             <Text style={styles.emptyText}>No clubs found in {exploringLocation.name}</Text>
           </View>
         ) : (
-          /* Club List */
           <FlatList
             data={clubs}
             keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <ClubCard club={item} onBook={() => handleBookPress(item)} />
-            )}
-            contentContainerStyle={styles.listContainer}
+            renderItem={renderClubItem}
+            contentContainerStyle={{ paddingBottom: 20 }}
             showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+            }
           />
         )}
       </View>
-
-      {/* Booking Confirmation Modal */}
-      <CustomModal
-        visible={!!selectedClub}
-        onClose={() => setSelectedClub(null)}
-        title="Confirm Entry"
-      >
-        {selectedClub && (
-          <View>
-            <Text style={styles.modalText}>
-              You are booking a Stag Entry for <Text style={{fontWeight: 'bold', color: colors.white}}>{selectedClub.name}</Text>.
-            </Text>
-            
-            <View style={styles.billRow}>
-              <Text style={styles.billLabel}>Entry Fee</Text>
-              <Text style={styles.billValue}>₹{selectedClub.price}</Text>
-            </View>
-            <View style={styles.billRow}>
-              <Text style={styles.billLabel}>Convenience Fee</Text>
-              <Text style={styles.billValue}>₹50</Text>
-            </View>
-            <View style={[styles.billRow, styles.totalRow]}>
-              <Text style={styles.totalLabel}>Total</Text>
-              <Text style={styles.totalValue}>₹{parseInt(selectedClub.price) + 50}</Text>
-            </View>
-
-            <TouchableOpacity style={styles.payButton} onPress={confirmBooking}>
-              <Text style={styles.payButtonText}>Pay & Book</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </CustomModal>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: 24,
-  },
-  listHeader: {
-    marginTop: 20,
-    marginBottom: 20,
-  },
-  heading: {
-    color: colors.white,
-    fontSize: 28,
-    fontWeight: '800',
-  },
-  subHeading: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 4,
-  },
-  listContainer: {
-    paddingBottom: 40,
-  },
-  centerContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    color: colors.textSecondary,
-    marginTop: 16,
-    fontSize: 16,
-  },
-  errorText: {
-    color: '#ef4444', // Red
-    textAlign: 'center',
-    fontSize: 16,
-  },
-  // Modal Styles
-  modalText: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    marginBottom: 24,
-    lineHeight: 24,
-  },
-  billRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  billLabel: { color: colors.textSecondary, fontSize: 16 },
-  billValue: { color: colors.white, fontSize: 16, fontWeight: '600' },
-  totalRow: {
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.1)',
-    paddingTop: 12,
-    marginTop: 12,
-    marginBottom: 30,
-  },
-  totalLabel: { color: colors.white, fontSize: 18, fontWeight: 'bold' },
-  totalValue: { color: colors.primary, fontSize: 20, fontWeight: 'bold' },
-  payButton: {
-    backgroundColor: colors.primary,
-    paddingVertical: 18,
-    borderRadius: 16,
-    alignItems: 'center',
-  },
-  payButtonText: {
-    color: colors.white,
-    fontSize: 18,
-    fontWeight: '700',
-  },
+  container: { flex: 1, backgroundColor: colors.background },
+  content: { flex: 1, paddingHorizontal: 20, paddingTop: 15 },
+  sectionTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '700', marginBottom: 15 },
+  loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', marginTop: 50 },
+  emptyText: { color: colors.textSecondary, marginTop: 15, fontSize: 16 },
+
+  card: { height: 180, backgroundColor: colors.surface, borderRadius: 16, marginBottom: 16, overflow: 'hidden', position: 'relative', borderWidth: 1, borderColor: colors.borderLight },
+  cardImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%', opacity: 0.5 },
+  cardOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
+  cardContent: { flex: 1, justifyContent: 'space-between', padding: 16 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  clubName: { color: colors.textPrimary, fontSize: 20, fontWeight: 'bold', maxWidth: '70%', textShadowColor: colors.black, textShadowOffset: { width: -1, height: 1 }, textShadowRadius: 10 },
+  promotedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surfaceLight, paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, borderWidth: 1, borderColor: colors.promoted },
+  promotedText: { color: colors.promoted, fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 0.5 },
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
+  leftFooter: { justifyContent: 'flex-end' },
+  priceContainer: { marginBottom: 4 },
+  priceLabel: { color: colors.textSecondary, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 },
+  priceValue: { color: colors.white, fontSize: 22, fontWeight: 'bold' },
+  distanceContainer: { flexDirection: 'row', alignItems: 'center' },
+  distanceText: { color: colors.textSecondary, fontSize: 13, marginLeft: 4, fontWeight: '500' },
+  joinButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primary, paddingVertical: 10, paddingHorizontal: 20, borderRadius: 30, elevation: 3, borderWidth: 1, borderColor: colors.borderLight },
+  joinText: { color: colors.white, fontWeight: 'bold', fontSize: 14, marginRight: 6 },
 });

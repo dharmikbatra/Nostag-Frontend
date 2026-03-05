@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useContext } from 'react';
 import { 
   View, 
   Text, 
@@ -9,17 +9,16 @@ import {
   Platform,
   TouchableWithoutFeedback,
   Keyboard,
-  ActivityIndicator
+  ActivityIndicator,
+  Alert
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons'; 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import colors from '../../constants/colours'; 
 import { API_BASE_URL } from '../../constants/config';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { UserContext } from '../../context/UserContext';
-import { useContext } from 'react';
-
-// Import your reusable component
 import CustomModal from '../../components/CustomModal'; 
 
 export default function LoginScreen({ navigation }) {
@@ -27,47 +26,51 @@ export default function LoginScreen({ navigation }) {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [isOtpVisible, setOtpVisible] = useState(false);
   const [otp, setOtp] = useState('');
-  const { login } = useContext(UserContext);
   const [verifying, setVerifying] = useState(false);
+  
+  const { login } = useContext(UserContext);
   
   // Ref to auto-focus OTP input when modal opens
   const otpInputRef = useRef(null);
 
   const handleGetOtp = async () => {
     if (phoneNumber.length < 10) {
-      alert("Please enter a valid 10-digit phone number.");
+      Alert.alert("Invalid Number", "Please enter a valid 10-digit phone number.");
       return;
     }
-    setVerifying(true); // Start loading
+
+    // 1. OPTIMISTIC UI UPDATE: Open modal and disable button immediately
+    Keyboard.dismiss();
+    setOtpVisible(true);
+    setVerifying(true); 
 
     try {
       const response = await fetch(`${API_BASE_URL}/auth/send-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          phone: `+91${phoneNumber}` 
-        })
+        body: JSON.stringify({ phone: `+91${phoneNumber}` })
       });
 
-      const data = await response.json(); // Parse response to get error messages if any
+      const data = await response.json(); 
 
-      // 2. CHECK FOR 2xx STATUS CODE
-      if (response.ok) {
-        Keyboard.dismiss();
-        setOtpVisible(true);
-      } else {
-        alert(data.message || "Failed to send OTP. Please try again.");
+      // 2. CHECK FOR FAILURE
+      if (!response.ok) {
+        // If it failed to send, close the modal so they can try again
+        setOtpVisible(false);
+        Alert.alert("Error", data.message || "Failed to send OTP. Please try again.");
       }
+      // If successful, do nothing! They are already in the modal typing.
 
     } catch (error) {
-        // Handle Network Errors (e.g., No Internet)
-        console.error(error);
-        alert("Network error. Please check your connection.");
+        console.error("OTP Request Error:", error);
+        setOtpVisible(false); // Close modal on network error
+        Alert.alert("Network Error", "Please check your internet connection.");
     } finally {
-        setVerifying(false); // Stop loading regardless of success/failure
+        setVerifying(false); // Unlock the button
     }
   };
-const handleVerifyOtp = async () => {
+
+  const handleVerifyOtp = async () => {
     setVerifying(true);
     
     try {
@@ -81,40 +84,35 @@ const handleVerifyOtp = async () => {
       });
 
       const data = await response.json();
+      console.log("OTP Verification Response:", data);
 
-      // 1. CHECK FOR SUCCESS (200 OK)
       if (response.ok) {
-        
-        // 2. STORE TOKEN & USER DATA
-        // We store them as strings. JSON.stringify needed for objects.
-        await AsyncStorage.setItem('accessToken', data.accessToken);
-
+        // STORE TOKEN
+        await AsyncStorage.setItem('accessToken', data.data.accessToken);
         console.log("Login Successful. Token saved.");
 
-        // 3. CLEAN UP UI
+        // CLEAN UP UI
         setVerifying(false);
         setOtpVisible(false);
         setOtp(''); 
 
-        // 4. NAVIGATE BASED ON BACKEND DATA
-        if (data.isNewUser) {
-           // If backend says they are new, force them to setup profile
-           navigation.navigate('ProfileSetup');
+        // NAVIGATE BASED ON BACKEND DATA
+        if (data.data.isNewUser) {
+           navigation.replace('ProfileSetup');
         } else {
-            await AsyncStorage.setItem('user', JSON.stringify(data.user));
-            login(data.accessToken, data.user); // Update global context
+           await AsyncStorage.setItem('user', JSON.stringify(data.data.user));
+           login(data.data.accessToken, data.data.user); 
         }
-
       } else {
         setVerifying(false);
-        alert(data.message || "Invalid OTP. Please try again.");
+        Alert.alert("Verification Failed", data.message || "Invalid OTP. Please try again.");
       }
     } catch (error) {
       setVerifying(false);
       console.error("Verification Error:", error);
-      alert("Network error. Could not verify OTP.");
+      Alert.alert("Network Error", "Could not verify OTP. Please check your connection.");
     }
-};
+  };
 
   // Auto-focus the OTP input when the modal appears
   useEffect(() => {
@@ -166,9 +164,10 @@ const handleVerifyOtp = async () => {
           {/* Footer Actions */}
           <View style={styles.footer}>
             <TouchableOpacity 
-              style={[styles.button, phoneNumber.length < 10 && styles.buttonDisabled]} 
+              // Disable button if phone is incomplete OR if we are currently verifying/requesting
+              style={[styles.button, (phoneNumber.length < 10 || verifying) && styles.buttonDisabled]} 
               onPress={handleGetOtp}
-              disabled={phoneNumber.length < 10}
+              disabled={phoneNumber.length < 10 || verifying}
             >
               <Text style={styles.buttonText}>Get OTP</Text>
               <Ionicons name="chatbubble-ellipses-outline" size={20} color={colors.white} style={{marginLeft: 8}}/>
@@ -202,7 +201,7 @@ const handleVerifyOtp = async () => {
         />
 
         <TouchableOpacity 
-          style={[styles.modalButton, otp.length < 4 && styles.buttonDisabled]} 
+          style={[styles.modalButton, (otp.length < 4 || verifying) && styles.buttonDisabled]} 
           onPress={handleVerifyOtp}
           disabled={otp.length < 4 || verifying}
         >
@@ -219,136 +218,32 @@ const handleVerifyOtp = async () => {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  innerContainer: {
-    flex: 1,
-    padding: 24,
-    justifyContent: 'space-between',
-  },
+  container: { flex: 1, backgroundColor: colors.background },
+  innerContainer: { flex: 1, padding: 24, justifyContent: 'space-between' },
   
   // Navigation & Header
-  backButton: { 
-    marginTop: 40, 
-    width: 40, 
-    height: 40, 
-    justifyContent: 'center' 
-  },
-  header: { 
-    marginBottom: 40 
-  },
-  title: { 
-    fontSize: 32, 
-    fontWeight: '800', 
-    color: colors.textPrimary, 
-    marginBottom: 12 
-  },
-  subtitle: { 
-    fontSize: 16, 
-    color: colors.textSecondary, 
-    lineHeight: 24 
-  },
+  backButton: { marginTop: 40, width: 40, height: 40, justifyContent: 'center' },
+  header: { marginBottom: 40 },
+  title: { fontSize: 32, fontWeight: '800', color: colors.textPrimary, marginBottom: 12 },
+  subtitle: { fontSize: 16, color: colors.textSecondary, lineHeight: 24 },
   
   // Form Area
-  form: { 
-    flex: 1, 
-    marginTop: 20 
-  },
-  label: { 
-    color: colors.textSecondary, 
-    fontSize: 14, 
-    fontWeight: '600', 
-    marginBottom: 12, 
-    marginLeft: 4 
-  },
-  inputContainer: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: colors.surface, 
-    borderRadius: 16, 
-    paddingHorizontal: 20, 
-    paddingVertical: 18, 
-    borderWidth: 1, 
-    borderColor: 'rgba(255,255,255,0.1)' 
-  },
-  countryCode: { 
-    color: colors.white, 
-    fontSize: 18, 
-    fontWeight: '600' 
-  },
-  verticalDivider: { 
-    width: 1, 
-    height: 24, 
-    backgroundColor: colors.textSecondary, 
-    marginHorizontal: 16, 
-    opacity: 0.3 
-  },
-  input: { 
-    flex: 1, 
-    color: colors.white, 
-    fontSize: 18, 
-    fontWeight: '600' 
-  },
+  form: { flex: 1, marginTop: 20 },
+  label: { color: colors.textSecondary, fontSize: 14, fontWeight: '600', marginBottom: 12, marginLeft: 4 },
+  inputContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: 16, paddingHorizontal: 20, paddingVertical: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  countryCode: { color: colors.white, fontSize: 18, fontWeight: '600' },
+  verticalDivider: { width: 1, height: 24, backgroundColor: colors.textSecondary, marginHorizontal: 16, opacity: 0.3 },
+  input: { flex: 1, color: colors.white, fontSize: 18, fontWeight: '600' },
   
   // Footer Area
-  footer: { 
-    marginBottom: 20 
-  },
-  button: { 
-    flexDirection: 'row', 
-    backgroundColor: colors.primary, 
-    paddingVertical: 18, 
-    borderRadius: 16, 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    shadowColor: colors.primary, 
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.3, 
-    shadowRadius: 8 
-  },
-  buttonDisabled: { 
-    backgroundColor: colors.surface, 
-    shadowOpacity: 0, 
-    opacity: 0.5 
-  },
-  buttonText: { 
-    color: colors.white, 
-    fontSize: 18, 
-    fontWeight: '700' 
-  },
-  disclaimer: { 
-    textAlign: 'center', 
-    color: colors.textSecondary, 
-    fontSize: 12, 
-    marginTop: 16, 
-    opacity: 0.6 
-  },
+  footer: { marginBottom: 20 },
+  button: { flexDirection: 'row', backgroundColor: colors.primary, paddingVertical: 18, borderRadius: 16, alignItems: 'center', justifyContent: 'center', shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
+  buttonDisabled: { backgroundColor: colors.surface, shadowOpacity: 0, opacity: 0.5 },
+  buttonText: { color: colors.white, fontSize: 18, fontWeight: '700' },
+  disclaimer: { textAlign: 'center', color: colors.textSecondary, fontSize: 12, marginTop: 16, opacity: 0.6 },
 
   // Modal Specific Styles
-  modalSubtitle: {
-    fontSize: 16,
-    color: colors.textSecondary,
-    marginBottom: 30,
-  },
-  otpInput: {
-    backgroundColor: colors.background, 
-    color: colors.white,
-    fontSize: 32,
-    fontWeight: 'bold',
-    letterSpacing: 10,
-    paddingVertical: 20,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    marginBottom: 30,
-  },
-  modalButton: {
-    backgroundColor: colors.primary,
-    paddingVertical: 18,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center', // Ensures text/spinner is centered
-  },
+  modalSubtitle: { fontSize: 16, color: colors.textSecondary, marginBottom: 30 },
+  otpInput: { backgroundColor: colors.background, color: colors.white, fontSize: 32, fontWeight: 'bold', letterSpacing: 10, paddingVertical: 20, borderRadius: 16, borderWidth: 1, borderColor: colors.primary, marginBottom: 30 },
+  modalButton: { backgroundColor: colors.primary, paddingVertical: 18, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
 });

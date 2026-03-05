@@ -1,33 +1,98 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback, useContext } from 'react';
 import { 
   View, 
   Text, 
   StyleSheet, 
-  TouchableOpacity, 
   FlatList, 
   Image, 
+  TouchableOpacity, 
+  ActivityIndicator,
+  RefreshControl,
   Alert 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import HomeHeader from '../../components/HomeHeader'; 
-
-// Mock Data: Added 'earning' field
-const CLUB_QUEUES = [
-  { id: '1', name: 'The Velvet Room', menWaiting: 5, earning: 450, location: 'Downtown, 0.5km', image: 'https://via.placeholder.com/150' },
-  { id: '2', name: 'Midnight Lounge', menWaiting: 12, earning: 500, location: 'West End, 1.2km', image: 'https://via.placeholder.com/150' },
-  { id: '3', name: 'Club Neon', menWaiting: 0, earning: 450, location: 'Sector 4, 3.0km', image: 'https://via.placeholder.com/150' },
-  { id: '4', name: 'Sapphire Sky', menWaiting: 3, earning: 600, location: 'Uptown, 5.0km', image: 'https://via.placeholder.com/150' },
-];
+import { clubApi } from '../../services/ApiService';
+import colors from '../../constants/colours';
+import { SocketContext } from '../../context/SocketContext'; 
+import { UserContext } from '../../context/UserContext'; 
 
 export default function WomanHomeScreen({ navigation }) {
+  const [clubs, setClubs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   
+  const { socket } = useContext(SocketContext); 
+  const { userLocation, exploringLocation } = useContext(UserContext); 
+
+  const loadClubs = async () => {
+    if (!exploringLocation) return;
+    try {
+      const data = await clubApi.getClubs(exploringLocation.lat, exploringLocation.lng);
+      
+      const sortedClubs = data.sort((a, b) => {
+        if (a.isPromoted && !b.isPromoted) return -1; 
+        if (!a.isPromoted && b.isPromoted) return 1;  
+        return 0; 
+      });
+
+      setClubs(sortedClubs);
+    } catch (error) {
+      console.error("Failed to load clubs", error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    loadClubs();
+  }, [exploringLocation]);
+
+  // LIVE SOCKET UPDATES
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleQueueUpdate = (data) => {
+      setClubs((prevClubs) => 
+        prevClubs.map((club) => 
+          club.id === data.clubId 
+            ? { ...club, waitingQueue: data.count }
+            : club
+        )
+      );
+    };
+
+    socket.on('club_queue_updated', handleQueueUpdate);
+
+    return () => {
+      socket.off('club_queue_updated', handleQueueUpdate);
+    };
+  }, [socket]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    loadClubs();
+  }, [exploringLocation]);
+
   const handleClubPress = (club) => {
-    if (club.menWaiting === 0) {
+    // Prevent joining empty queues
+    if (!club.waitingQueue || club.waitingQueue === 0) {
       Alert.alert("Quiet Club", "No men are waiting here right now. Try a busy club!");
       return;
     }
-    // Navigate to the Lobby Screen where she waits for the alert
-    navigation.navigate('WomanLobbyScreen', { clubData: club });
+
+    if (!userLocation) {
+      Alert.alert("Location Required", "Please allow GPS access to join a queue.");
+      return;
+    }
+    
+    navigation.navigate('WomanLobbyScreen', { 
+        clubData: club,
+        userLat: userLocation.lat, 
+        userLng: userLocation.lng 
+    });
   };
 
   const renderClubItem = ({ item }) => (
@@ -36,104 +101,115 @@ export default function WomanHomeScreen({ navigation }) {
       onPress={() => handleClubPress(item)}
       style={styles.card}
     >
-      <Image source={{ uri: item.image }} style={styles.cardImage} />
+      <Image source={{ uri: item.imageUrl || 'https://via.placeholder.com/400x200' }} style={styles.cardImage} />
       <View style={styles.cardOverlay} />
 
       <View style={styles.cardContent}>
         
-        {/* HEADER: Name + Waiting Count */}
         <View style={styles.cardHeader}>
-          <Text style={styles.clubName}>{item.name}</Text>
-          {item.menWaiting > 0 && (
+          <View style={styles.titleContainer}>
+            <Text style={styles.clubName} numberOfLines={2}>{item.name}</Text>
+            {item.isPromoted && (
+              <View style={styles.promotedBadge}>
+                <Ionicons name="sparkles" size={10} color={colors.promoted} style={{ marginRight: 4 }} />
+                <Text style={styles.promotedText}>Promoted</Text>
+              </View>
+            )}
+          </View>
+
+          {item.waitingQueue > 0 && (
             <View style={styles.waitingBadge}>
-              <Text style={styles.waitingText}>{item.menWaiting} Waiting</Text>
+              <Text style={styles.waitingText}>{item.waitingQueue} Waiting</Text>
             </View>
           )}
         </View>
 
-        {/* FOOTER: Location + MONEY */}
         <View style={styles.cardFooter}>
-          
-          {/* Left: Location */}
           <View style={styles.locationContainer}>
-             <Ionicons name="location-sharp" size={14} color="#94a3b8" />
-             <Text style={styles.locationText}>{item.location}</Text>
+             <Ionicons name="location-sharp" size={14} color={colors.textSecondary} />
+             <Text style={styles.locationText}>{item.distance || 'Nearby'}</Text>
           </View>
 
-          {/* Right: EARNING PRICE TAG */}
           <View style={styles.priceTag}>
              <Text style={styles.priceLabel}>Earn</Text>
-             <Text style={styles.priceValue}>₹{item.earning}</Text>
+             <Text style={styles.priceValue}>₹{item.currentPrice - item.platformFee}</Text>
           </View>
-
         </View>
 
       </View>
     </TouchableOpacity>
   );
 
+  // Show loading state if Context is still initializing
+  if (!exploringLocation) {
+     return (
+       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+         <ActivityIndicator size="large" color={colors.primary} />
+       </View>
+     );
+  }
+
   return (
     <View style={styles.container}>
       <HomeHeader />
       
       <View style={styles.content}>
-        <Text style={styles.sectionTitle}>High Demand Clubs</Text>
-        <FlatList
-          data={CLUB_QUEUES}
-          keyExtractor={(item) => item.id}
-          renderItem={renderClubItem}
-          contentContainerStyle={{ paddingBottom: 20 }}
-          showsVerticalScrollIndicator={false}
-        />
+        <Text style={styles.sectionTitle}>High Demand in {exploringLocation.name}</Text>
+        
+        {loading ? (
+          <View style={styles.loaderContainer}>
+             <ActivityIndicator size="large" color={colors.primary} />
+          </View>
+        ) : clubs.length === 0 ? (
+          <View style={styles.emptyContainer}>
+             <Ionicons name="wine-outline" size={48} color={colors.textSecondary} />
+             <Text style={styles.emptyText}>No clubs found in {exploringLocation.name}</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={clubs}
+            keyExtractor={(item) => item.id}
+            renderItem={renderClubItem}
+            contentContainerStyle={{ paddingBottom: 20 }}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+            }
+          />
+        )}
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
+  container: { flex: 1, backgroundColor: colors.background },
   content: { flex: 1, paddingHorizontal: 20, paddingTop: 15 },
-  sectionTitle: { color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 15 },
-  
-  // Card
-  card: {
-    height: 150,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-    marginBottom: 16,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  cardImage: { width: '100%', height: '100%', position: 'absolute', opacity: 0.5 },
+  sectionTitle: { color: colors.white, fontSize: 18, fontWeight: '700', marginBottom: 15 },
+  loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', marginTop: 50 },
+  emptyText: { color: colors.textSecondary, marginTop: 15, fontSize: 16 },
+
+  card: { height: 180, backgroundColor: colors.surface, borderRadius: 16, marginBottom: 16, overflow: 'hidden', position: 'relative', borderWidth: 1, borderColor: colors.borderLight },
+  cardImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%', opacity: 0.5 },
   cardOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
-  
   cardContent: { flex: 1, justifyContent: 'space-between', padding: 16 },
   
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  clubName: { color: '#fff', fontSize: 20, fontWeight: 'bold', maxWidth: '65%' },
+  titleContainer: { flex: 1, paddingRight: 10 },
+  clubName: { color: colors.white, fontSize: 20, fontWeight: 'bold', textShadowColor: colors.black, textShadowOffset: { width: -1, height: 1 }, textShadowRadius: 10 },
   
-  waitingBadge: {
-    backgroundColor: '#dc2626', // Red for urgency
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-  },
-  waitingText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  promotedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surfaceLight, paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, borderWidth: 1, borderColor: colors.promoted, alignSelf: 'flex-start', marginTop: 6 },
+  promotedText: { color: colors.promoted, fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 0.5 },
+
+  waitingBadge: { backgroundColor: colors.error, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12, elevation: 5, shadowColor: colors.error, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4 },
+  waitingText: { color: colors.white, fontSize: 12, fontWeight: 'bold' },
 
   cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  locationContainer: { flexDirection: 'row', alignItems: 'center' },
-  locationText: { color: '#e2e8f0', fontSize: 13, marginLeft: 4 },
+  locationContainer: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  locationText: { color: colors.textSecondary, fontSize: 13, marginLeft: 4, fontWeight: '500' },
 
-  // THE MONEY BADGE
-  priceTag: {
-    backgroundColor: '#10b981', // Emerald Green
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 20,
-    alignItems: 'center',
-    flexDirection: 'row',
-  },
-  priceLabel: { color: '#ecfdf5', fontSize: 10, marginRight: 4 },
-  priceValue: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  priceTag: { backgroundColor: colors.success, paddingVertical: 6, paddingHorizontal: 14, borderRadius: 20, alignItems: 'center', flexDirection: 'row', elevation: 3 },
+  priceLabel: { color: colors.white, fontSize: 10, marginRight: 4, textTransform: 'uppercase', fontWeight: 'bold', opacity: 0.9 },
+  priceValue: { color: colors.white, fontSize: 18, fontWeight: 'bold' },
 });

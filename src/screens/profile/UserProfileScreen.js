@@ -1,4 +1,4 @@
-import React, { useState, useContext } from 'react';
+import React, { useState, useContext, useEffect } from 'react';
 import { 
   View, 
   Text, 
@@ -14,7 +14,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as ImagePicker from 'expo-image-picker'; // <--- Import Image Picker
+import * as ImagePicker from 'expo-image-picker'; 
+import { useFacesInPhoto } from '@infinitered/react-native-mlkit-face-detection'; // <--- ML Kit Hook
 
 import colors from '../../constants/colours';
 import { UserContext } from '../../context/UserContext';
@@ -28,8 +29,9 @@ export default function UserProfileScreen({ navigation }) {
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   
-  // Specific loading state for photo upload
+  // Photo states
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [pendingPhoto, setPendingPhoto] = useState(null); // Triggers ML Kit scan
 
   // Modals
   const [showTerms, setShowTerms] = useState(false);
@@ -38,8 +40,33 @@ export default function UserProfileScreen({ navigation }) {
   const [tempData, setTempData] = useState({
     name: '',
     height: '',
-    photo: null, // This will store the S3 URL after upload
+    photo: null, 
   });
+
+  // --- ML KIT FACE DETECTION HOOK ---
+  const { faces, status: mlStatus, error: mlError } = useFacesInPhoto(pendingPhoto);
+
+  useEffect(() => {
+    if (mlStatus === 'done' && pendingPhoto) {
+      if (faces && faces.length === 1) {
+        // SUCCESS: Exactly one face found! Proceed to S3 upload.
+        const photoToUpload = pendingPhoto;
+        setPendingPhoto(null); 
+        uploadImageToS3(photoToUpload); 
+      } else if (faces && faces.length > 1) {
+        Alert.alert("Too Many People 👯‍♂️", "Your profile picture should only contain you. Please take a solo selfie.");
+        setPendingPhoto(null); 
+      } else {
+        Alert.alert("No Face Detected 🕵️‍♂️", "We couldn't clearly see a face. Please ensure good lighting and try again.");
+        setPendingPhoto(null); 
+      }
+    } else if (mlError) {
+      console.error("ML Kit Error:", mlError);
+      Alert.alert("Error", "Something went wrong verifying the photo.");
+      setPendingPhoto(null);
+    }
+  }, [mlStatus, faces, mlError, pendingPhoto]);
+
 
   const startEditing = () => {
     setTempData({
@@ -57,7 +84,6 @@ export default function UserProfileScreen({ navigation }) {
       const token = await AsyncStorage.getItem('accessToken');
       
       // 1. GET PRESIGNED URL
-      // We assume the image is jpeg for simplicity, or extract extension from uri
       const typeResponse = await fetch(`${API_BASE_URL}/users/upload-url`, {
         method: 'POST',
         headers: {
@@ -68,20 +94,16 @@ export default function UserProfileScreen({ navigation }) {
       });
 
       const { uploadUrl, fileUrl } = await typeResponse.json();
-      
       if (!uploadUrl) throw new Error("Failed to get upload URL");
 
       // 2. UPLOAD BINARY TO S3 DIRECTLY
-      // Convert URI to Blob
       const imgResponse = await fetch(localUri);
       const blob = await imgResponse.blob();
 
       const s3Response = await fetch(uploadUrl, {
         method: 'PUT',
         body: blob,
-        headers: {
-          'Content-Type': 'image/jpeg', // Must match what we sent in Step 1
-        }
+        headers: { 'Content-Type': 'image/jpeg' }
       });
 
       if (s3Response.status !== 200) throw new Error("Failed to upload to S3");
@@ -97,41 +119,39 @@ export default function UserProfileScreen({ navigation }) {
     }
   };
 
+  // --- LIVE PHOTO CAPTURE ---
   const handlePhotoPick = async () => {
     if (!isEditing) return;
 
-    // 1. Request Permission
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    // 1. Request Camera Permission
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert("Permission Denied", "We need access to your gallery to change your photo.");
+      Alert.alert("Permission Denied", "We need camera access to take your profile picture.");
       return;
     }
 
-    // 2. Pick Image
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    // 2. Launch Camera (Front-facing, no gallery)
+    const result = await ImagePicker.launchCameraAsync({
+      cameraType: ImagePicker.CameraType.front,
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.8,
+      quality: 0.7,
     });
 
     if (!result.canceled) {
-      // 3. Trigger Upload immediately
-      uploadImageToS3(result.assets[0].uri);
+      // 3. Trigger ML Kit verification
+      setPendingPhoto(result.assets[0].uri);
     }
   };
-  // ------------------------------------
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
       const token = await AsyncStorage.getItem('accessToken');
       
-      // STEP 2 (Database Update): Send the S3 URL (profilePicUrl) to backend
       const payload = {
         name: tempData.name,
         height: parseInt(tempData.height) || 0,
-        // If we uploaded a new photo, tempData.photo contains the new S3 link
         profilePicUrl: tempData.photo 
       };
 
@@ -165,6 +185,9 @@ export default function UserProfileScreen({ navigation }) {
     navigation.reset({ index: 0, routes: [{ name: 'Welcome' }] });
   };
 
+  // Determine if we should show a loading state on the avatar
+  const isProcessingPhoto = isUploadingPhoto || mlStatus === 'detecting';
+
   return (
     <KeyboardAvoidingView 
       behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -182,12 +205,12 @@ export default function UserProfileScreen({ navigation }) {
 
         <TouchableOpacity 
           onPress={isEditing ? handleSave : startEditing}
-          disabled={isSaving || isUploadingPhoto} // Disable save while uploading photo
+          disabled={isSaving || isProcessingPhoto} 
         >
           {isSaving ? (
             <ActivityIndicator size="small" color={colors.primary} />
           ) : (
-            <Text style={[styles.editButtonText, isUploadingPhoto && { opacity: 0.5 }]}>
+            <Text style={[styles.editButtonText, isProcessingPhoto && { opacity: 0.5 }]}>
               {isEditing ? 'Save' : 'Edit'}
             </Text>
           )}
@@ -202,10 +225,10 @@ export default function UserProfileScreen({ navigation }) {
             onPress={handlePhotoPick}
             activeOpacity={isEditing ? 0.7 : 1}
             style={styles.photoWrapper}
-            disabled={!isEditing || isUploadingPhoto}
+            disabled={!isEditing || isProcessingPhoto}
           >
-            {/* Show Spinner if Uploading */}
-            {isUploadingPhoto ? (
+            {/* Show Spinner if Scanning or Uploading */}
+            {isProcessingPhoto ? (
                <View style={[styles.profileImage, styles.loadingOverlay]}>
                   <ActivityIndicator color={colors.primary} size="large" />
                </View>
@@ -222,13 +245,18 @@ export default function UserProfileScreen({ navigation }) {
               )
             )}
 
-            {isEditing && !isUploadingPhoto && (
+            {isEditing && !isProcessingPhoto && (
               <View style={styles.cameraBadge}>
                 <Ionicons name="camera" size={16} color={colors.white} />
               </View>
             )}
           </TouchableOpacity>
-          {isEditing && <Text style={styles.changePhotoText}>Tap to change photo</Text>}
+          
+          {isEditing && (
+            <Text style={styles.changePhotoText}>
+              {mlStatus === 'detecting' ? 'Scanning Face...' : isUploadingPhoto ? 'Uploading...' : 'Tap to change photo'}
+            </Text>
+          )}
         </View>
 
         {/* Form Section */}
@@ -292,7 +320,7 @@ export default function UserProfileScreen({ navigation }) {
   );
 }
 
-// --- HELPER COMPONENTS (Keep same as before) ---
+// --- HELPER COMPONENTS ---
 const ProfileField = ({ label, value, editable, onChange, style, isLocked, keyboardType }) => (
   <View style={[styles.fieldContainer, style]}>
     <Text style={styles.label}>{label}</Text>
@@ -341,7 +369,6 @@ const styles = StyleSheet.create({
   iconButton: { padding: 4 },
   scrollContent: { padding: 24 },
   
-  // Photo Styles Updated for Loader
   photoContainer: { alignItems: 'center', marginBottom: 30 },
   photoWrapper: { position: 'relative' },
   profileImage: { width: 100, height: 100, borderRadius: 50, borderWidth: 2, borderColor: colors.primary },
@@ -363,7 +390,6 @@ const styles = StyleSheet.create({
   },
   changePhotoText: { color: colors.primary, fontSize: 14, marginTop: 10 },
   
-  // ... rest of styles same as before
   formSection: { marginBottom: 30 },
   row: { flexDirection: 'row' },
   fieldContainer: { marginBottom: 20 },

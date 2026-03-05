@@ -1,142 +1,241 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert, Modal } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  View, 
+  Text, 
+  StyleSheet, 
+  Image, 
+  TouchableOpacity, 
+  ActivityIndicator,
+  Alert
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { clubApi } from '../../services/ApiService';
+import colors from '../../constants/colours';
 
 export default function WomanLobbyScreen({ route, navigation }) {
-  const { clubData } = route.params;
-  const [modalVisible, setModalVisible] = useState(false);
-  const [incomingRequest, setIncomingRequest] = useState(null);
+  // We receive the exact GPS coordinates passed from the Home Screen
+  const { clubData, userLat, userLng } = route.params;
 
-  // SIMULATION: Simulate receiving a request after 3 seconds
+  const [matchData, setMatchData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(0);
+  const [queueEmpty, setQueueEmpty] = useState(false);
+
+  // --- 1. FETCH NEXT MATCH ---
+  const fetchNextMatch = useCallback(async () => {
+    setLoading(true);
+    setMatchData(null);
+    try {
+      // Call backend to get the guy at the front of the queue
+      const data = await clubApi.getNextMatch(clubData.id);
+      console.log("Fetched Next Match:", data);
+      
+      // Check for requestId from your new JSON payload
+      if (data && data.requestId) {
+        setMatchData(data);
+        // Dynamically set the timer based on backend lock
+        setTimeLeft(data.lockExpiresInSeconds || 20); 
+        setQueueEmpty(false);
+      } else {
+        setQueueEmpty(true);
+      }
+    } catch (error) {
+      if (error.response?.status === 404) {
+        setQueueEmpty(true); // 404 means no one is currently in the queue
+      } else {
+        Alert.alert("Error", "Could not fetch next match.");
+        navigation.goBack();
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [clubData.id, userLat, userLng, navigation]);
+
+  // Initial fetch on screen load
   useEffect(() => {
-    const timer = setTimeout(() => {
-        // This data would usually come from Socket.io
-        setIncomingRequest({
-            manName: "User #9921",
-            amount: clubData.earning
-        });
-        setModalVisible(true);
-    }, 3000);
+    fetchNextMatch();
+  }, [fetchNextMatch]);
 
-    return () => clearTimeout(timer);
-  }, []);
+  // --- 2. THE COUNTDOWN TIMER ---
+  useEffect(() => {
+    // If no match is loaded, an action is processing, or time is up, stop the timer
+    if (!matchData || actionLoading || timeLeft <= 0) return;
 
-  const handleAccept = () => {
-      setModalVisible(false);
-      // 1. Send signal to backend that we accepted
-    // socket.emit('request_accepted', { requestId: incomingRequest.id });
+    const timerInterval = setInterval(() => {
+      setTimeLeft((prevTime) => {
+        if (prevTime <= 1) {
+          clearInterval(timerInterval);
+          handleReject();
+          return 0;
+        }
+        return prevTime - 1;
+      });
+    }, 1000);
 
-    // 2. Navigate immediately
-    navigation.navigate('ChatScreen', { 
-        channelId: incomingRequest.id, // The Room ID
-        otherUserName: incomingRequest.manName,
-        isVideoCall: false 
-    });
-      Alert.alert("Connected!", "Starting video call...");
-  };
+    return () => clearInterval(timerInterval);
+  }, [matchData, timeLeft, actionLoading]);
 
+  // --- 3. ACTIONS: REJECT & ACCEPT ---
   const handleReject = () => {
-      setModalVisible(false);
-      setIncomingRequest(null);
-      // Resume searching...
+    // Timer ran out or she manually rejected. Fetch the next person in line.
+    fetchNextMatch();
   };
 
-  const handleGoOffline = () => {
-    // Logic to leave the queue
-    navigation.goBack();
+  const handleAccept = async () => {
+    setActionLoading(true);
+    try {
+      const response = await clubApi.acceptRequest(matchData.requestId, userLat, userLng);
+      console.log("Accept Match Response:", response);
+      
+      navigation.replace('WomanOtpScreen', { 
+        bookingId: response.bookingId,
+        manName: matchData.man.name,
+        manPhone: matchData.man.phoneNumber,
+        clubName: clubData.clubName
+      });
+
+    } catch (error) {
+      const msg = error.response?.data?.message || "Could not accept match. He might have cancelled.";
+      Alert.alert("Match Failed", msg);
+      fetchNextMatch(); // Try to get the next person instead
+    } finally {
+      setActionLoading(false);
+    }
   };
 
+  // --- UI RENDERS ---
+  
+  // 1. Loading State
+  if (loading && !matchData) {
+    return (
+      <SafeAreaView style={styles.centerContainer}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={styles.loadingText}>Finding the next match...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  // 2. Empty Queue State
+  if (queueEmpty) {
+    return (
+      <SafeAreaView style={styles.centerContainer}>
+        <Ionicons name="sad-outline" size={60} color={colors.textSecondary} />
+        <Text style={styles.emptyText}>No more men waiting at {clubData.name}.</Text>
+        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
+           <Text style={styles.backBtnText}>Go Back</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
+
+  // Calculate timer color (turns red when 5 seconds or less remain)
+  const timerColor = timeLeft > 5 ? colors.primary : colors.error;
+
+  // 3. Match Card State
   return (
     <SafeAreaView style={styles.container}>
       
-      {/* 1. Header Area */}
+      {/* HEADER */}
       <View style={styles.header}>
-        <Text style={styles.statusTitle}>You are Live in</Text>
-        <Text style={styles.clubName}>{clubData.name}</Text>
-        <View style={styles.tag}>
-             <Text style={styles.tagText}>Earning: ₹{clubData.earning}/call</Text>
-        </View>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backIcon}>
+          <Ionicons name="arrow" size={24} color={colors.white} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>{clubData.name}</Text>
+        <View style={{ width: 24 }} /> 
       </View>
 
-      {/* 2. Pulse Animation / Searching UI */}
-      <View style={styles.centerContent}>
-        <View style={styles.pulseCircle}>
-            <ActivityIndicator size="large" color="#ffffff" />
-        </View>
-        <Text style={styles.waitingText}>Matching you with a client...</Text>
-        <Text style={styles.hintText}>Stay on this screen to receive requests.</Text>
-      </View>
+      {/* MATCH CARD */}
+      {matchData && matchData.man && (
+        <View style={styles.cardContainer}>
+          
+          <View style={[styles.timerHeader, { borderColor: timerColor }]}>
+             <Ionicons name="timer-outline" size={20} color={timerColor} />
+             <Text style={[styles.timerText, { color: timerColor }]}>
+               {timeLeft}s remaining
+             </Text>
+          </View>
 
-      {/* 3. Leave Button */}
-      <TouchableOpacity style={styles.leaveButton} onPress={handleGoOffline}>
-        <Text style={styles.leaveText}>Go Back</Text>
-      </TouchableOpacity>
-
-      {/* 4. INCOMING REQUEST MODAL */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={modalVisible}
-      >
-        <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Incoming Request! 🎉</Text>
-                
-                <Text style={styles.modalSub}>
-                    Client is ready to connect.
-                </Text>
-
-                <View style={styles.earningsBox}>
-                    <Text style={styles.earningsLabel}>YOU WILL EARN</Text>
-                    <Text style={styles.earningsValue}>₹{incomingRequest?.amount}</Text>
-                </View>
-
-                <View style={styles.modalButtons}>
-                    <TouchableOpacity style={styles.rejectBtn} onPress={handleReject}>
-                        <Text style={styles.rejectText}>Decline</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={styles.acceptBtn} onPress={handleAccept}>
-                        <Text style={styles.acceptText}>Accept & Call</Text>
-                    </TouchableOpacity>
-                </View>
+          <Image 
+            source={{ uri: matchData.man.profilePicUrl || 'https://via.placeholder.com/300' }} 
+            style={styles.profileImage} 
+          />
+          
+          <View style={styles.infoBox}>
+            {/* Displaying Name and Height from payload */}
+            <Text style={styles.nameText}>{matchData.man.name}</Text>
+            {matchData.man.height ? (
+              <Text style={styles.subText}>Height: {matchData.man.height} cm</Text>
+            ) : null}
+            
+            <View style={styles.earningsBox}>
+                <Text style={styles.earningsLabel}>YOU WILL EARN</Text>
+                <Text style={styles.earningsValue}>₹{clubData.currentPrice - clubData.platformFee}</Text>
             </View>
+          </View>
+
+          <View style={styles.actionButtons}>
+            {/* DECLINE BUTTON */}
+            <TouchableOpacity 
+              style={[styles.btn, styles.rejectBtn]} 
+              onPress={handleReject}
+              disabled={actionLoading}
+            >
+              <Ionicons name="close" size={36} color={colors.error} />
+            </TouchableOpacity>
+
+            {/* ACCEPT BUTTON */}
+            <TouchableOpacity 
+              style={[styles.btn, styles.acceptBtn]} 
+              onPress={handleAccept}
+              disabled={actionLoading}
+            >
+              {actionLoading ? (
+                <ActivityIndicator color={colors.white} size="large" />
+              ) : (
+                <Ionicons name="heart" size={36} color={colors.white} />
+              )}
+            </TouchableOpacity>
+          </View>
+
         </View>
-      </Modal>
+      )}
 
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a', padding: 20 },
-  header: { alignItems: 'center', marginTop: 20 },
-  statusTitle: { color: '#94a3b8', fontSize: 16 },
-  clubName: { color: '#fff', fontSize: 28, fontWeight: 'bold', marginVertical: 5 },
-  tag: { backgroundColor: '#1e293b', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 20, marginTop: 5 },
-  tagText: { color: '#10b981', fontWeight: 'bold' },
-
-  centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  pulseCircle: { width: 100, height: 100, borderRadius: 50, backgroundColor: 'rgba(99, 102, 241, 0.3)', justifyContent: 'center', alignItems: 'center', marginBottom: 30 },
-  waitingText: { color: '#fff', fontSize: 18, fontWeight: '600' },
-  hintText: { color: '#64748b', fontSize: 14, marginTop: 10 },
-
-  leaveButton: { backgroundColor: '#334155', padding: 15, borderRadius: 30, alignItems: 'center', marginBottom: 20 },
-  leaveText: { color: '#fff', fontWeight: 'bold' },
-
-  // Modal Styles
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
-  modalContent: { backgroundColor: '#1e293b', padding: 25, borderTopLeftRadius: 25, borderTopRightRadius: 25, alignItems: 'center' },
-  modalTitle: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginBottom: 10 },
-  modalSub: { color: '#94a3b8', marginBottom: 20 },
-  earningsBox: { backgroundColor: 'rgba(16, 185, 129, 0.15)', width: '100%', alignItems: 'center', padding: 15, borderRadius: 12, marginBottom: 25, borderWidth: 1, borderColor: '#10b981' },
-  earningsLabel: { color: '#10b981', fontSize: 12, fontWeight: 'bold', letterSpacing: 1 },
-  earningsValue: { color: '#fff', fontSize: 32, fontWeight: 'bold' },
+  container: { flex: 1, backgroundColor: colors.background },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background, padding: 20 },
+  loadingText: { color: colors.textSecondary, marginTop: 15, fontSize: 16 },
   
-  modalButtons: { flexDirection: 'row', width: '100%', justifyContent: 'space-between' },
-  rejectBtn: { flex: 1, padding: 16, alignItems: 'center', marginRight: 10 },
-  rejectText: { color: '#ef4444', fontWeight: 'bold', fontSize: 16 },
-  acceptBtn: { flex: 2, backgroundColor: '#6366f1', borderRadius: 12, padding: 16, alignItems: 'center' },
-  acceptText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  emptyText: { color: colors.white, marginTop: 15, fontSize: 18, fontWeight: 'bold', textAlign: 'center' },
+  backBtn: { marginTop: 25, paddingVertical: 12, paddingHorizontal: 24, backgroundColor: colors.surface, borderRadius: 30, borderWidth: 1, borderColor: colors.borderLight },
+  backBtnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
+
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 15, paddingHorizontal: 20 },
+  backIcon: { padding: 5 },
+  headerTitle: { color: colors.white, fontSize: 18, fontWeight: 'bold' },
+
+  cardContainer: { flex: 1, padding: 20, alignItems: 'center' },
+  
+  timerHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, paddingVertical: 10, paddingHorizontal: 20, borderRadius: 25, marginBottom: 20, borderWidth: 1 },
+  timerText: { fontSize: 16, fontWeight: 'bold', marginLeft: 8 },
+  
+  profileImage: { width: '100%', height: 320, borderRadius: 24, backgroundColor: colors.surface, borderWidth: 2, borderColor: colors.borderLight },
+  
+  infoBox: { marginTop: 20, alignItems: 'center', width: '100%' },
+  nameText: { color: colors.white, fontSize: 32, fontWeight: '800', marginBottom: 5 },
+  subText: { color: colors.textSecondary, fontSize: 16, fontWeight: '500', marginBottom: 15 },
+  
+  earningsBox: { backgroundColor: 'rgba(16, 185, 129, 0.15)', width: '100%', alignItems: 'center', padding: 15, borderRadius: 16, borderWidth: 1, borderColor: colors.success },
+  earningsLabel: { color: colors.success, fontSize: 12, fontWeight: 'bold', letterSpacing: 1 },
+  earningsValue: { color: colors.white, fontSize: 32, fontWeight: 'bold' },
+
+  actionButtons: { flexDirection: 'row', marginTop: 30, width: '100%', justifyContent: 'space-around' },
+  btn: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', elevation: 5 },
+  rejectBtn: { backgroundColor: colors.surface, borderWidth: 2, borderColor: colors.borderLight },
+  acceptBtn: { backgroundColor: colors.primary, shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8 },
 });

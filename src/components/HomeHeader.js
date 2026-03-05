@@ -1,5 +1,13 @@
-import React, { useContext } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
+import React, { useContext, useState } from 'react';
+import { 
+  View, 
+  Text, 
+  StyleSheet, 
+  TouchableOpacity, 
+  Image, 
+  Modal, 
+  FlatList 
+} from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { UserContext } from '../context/UserContext';
@@ -7,13 +15,43 @@ import colors from '../constants/colours';
 
 export default function HomeHeader() {
   const navigation = useNavigation();
-  const { user } = useContext(UserContext); 
+  const { 
+    user, 
+    userLocation, 
+    exploringLocation, 
+    setExploringLocation, 
+    OPERATIONAL_AREAS 
+  } = useContext(UserContext); 
+
+  const [dropdownVisible, setDropdownVisible] = useState(false);
 
   const displayBalance = user?.walletBalance?.toLocaleString() || '0';
   const profileImage = user?.profilePicUrl;
-  
-  // You might want to get this from a LocationContext later
-  const currentLocation = "Bengaluru, Koramangala"; 
+
+  // Check if the userLocation matches the DEFAULT_LOCATION coordinates
+  const isDefaultLocation = userLocation?.lat === 12.97 && userLocation?.lng === 77.64;
+  const locationPrefix = isDefaultLocation ? "📍 Default" : "📍 My Location";
+
+  // Prepend the dynamic location to the dropdown
+  const dropdownOptions = userLocation 
+    ? [
+        { 
+          id: isDefaultLocation ? 'default' : 'current', 
+          name: `${locationPrefix} (${userLocation.name || 'Bengaluru'})`, 
+          lat: userLocation.lat, 
+          lng: userLocation.lng 
+        },
+        ...OPERATIONAL_AREAS
+      ]
+    : OPERATIONAL_AREAS;
+
+  const handleSelectArea = (area) => {
+    setExploringLocation(area);
+    setDropdownVisible(false);
+  };
+
+  // Safe fallback if exploringLocation hasn't loaded yet
+  const exploringName = exploringLocation?.name || "Locating...";
 
   return (
     <View style={styles.wrapper}>
@@ -47,13 +85,57 @@ export default function HomeHeader() {
 
       </View>
 
-      {/* 2. Sub-Header: Location Bar */}
-      <View style={styles.locationBar}>
-        <Ionicons name="location-sharp" size={12} color={colors.primary} />
-        <Text style={styles.locationText}>
-           Detected: <Text style={styles.locationHighlight}>{currentLocation}</Text>
-        </Text>
-      </View>
+      {/* 2. Sub-Header: Clickable Location Dropdown */}
+      <TouchableOpacity 
+        style={styles.locationBar} 
+        activeOpacity={0.7}
+        onPress={() => setDropdownVisible(true)}
+      >
+        <Ionicons name="location-sharp" size={14} color={colors.primary} />
+        <Text style={styles.locationText}>Exploring: </Text>
+        <Text style={styles.locationHighlight}>{exploringName}</Text>
+        <Ionicons name="chevron-down" size={14} color={colors.textSecondary} style={{ marginLeft: 4 }} />
+      </TouchableOpacity>
+
+      {/* 3. Dropdown Modal */}
+      <Modal visible={dropdownVisible} transparent={true} animationType="fade">
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setDropdownVisible(false)}
+        >
+          <View style={styles.dropdownMenu}>
+            <Text style={styles.dropdownTitle}>Select Area</Text>
+            
+            <FlatList
+              data={dropdownOptions}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => {
+                const isActive = exploringLocation?.id === item.id;
+                return (
+                  <TouchableOpacity 
+                    style={[
+                      styles.dropdownItem, 
+                      isActive && styles.dropdownItemActive
+                    ]}
+                    onPress={() => handleSelectArea(item)}
+                  >
+                    <Text style={[
+                      styles.dropdownItemText,
+                      isActive && styles.dropdownItemTextActive
+                    ]}>
+                      {item.name}
+                    </Text>
+                    {isActive && (
+                       <Ionicons name="checkmark" size={18} color={colors.primary} />
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
     </View>
   );
@@ -63,7 +145,7 @@ const styles = StyleSheet.create({
   wrapper: {
     backgroundColor: colors.background,
     zIndex: 10,
-    paddingTop: 50, // Safe Area padding
+    paddingTop: 50, 
   },
   container: {
     flexDirection: 'row',
@@ -72,7 +154,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 15,
   },
-  // --- Wallet Styles ---
   walletButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -82,7 +163,7 @@ const styles = StyleSheet.create({
     paddingLeft: 4,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: colors.borderLight,
   },
   iconContainer: {
     width: 30,
@@ -98,7 +179,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 14,
   },
-  // --- Profile Styles ---
   profileButton: {
     width: 42,
     height: 42,
@@ -107,7 +187,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: colors.borderLight,
     overflow: 'hidden',
   },
   profileImage: {
@@ -119,19 +199,66 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
-    backgroundColor: 'rgba(255,255,255,0.03)', // Very subtle difference
+    paddingVertical: 12,
+    backgroundColor: colors.surfaceLight, 
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderColor: colors.borderExtraLight, 
   },
   locationText: {
-    color: colors.textSecondary, // e.g., #94a3b8
-    fontSize: 12,
+    color: colors.textSecondary,
+    fontSize: 14,
     marginLeft: 6,
   },
   locationHighlight: {
     color: colors.white,
-    fontWeight: '600',
+    fontWeight: 'bold',
+    fontSize: 14,
   },
+  // --- Modal Dropdown Styles ---
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)', 
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dropdownMenu: {
+    width: '80%',
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    maxHeight: '70%', 
+  },
+  dropdownTitle: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 15,
+    fontWeight: 'bold',
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderExtraLight,
+  },
+  dropdownItemActive: {
+    backgroundColor: colors.primaryBackground,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    borderBottomWidth: 0,
+  },
+  dropdownItemText: {
+    color: colors.white,
+    fontSize: 16,
+  },
+  dropdownItemTextActive: {
+    color: colors.primary,
+    fontWeight: 'bold',
+  }
 });

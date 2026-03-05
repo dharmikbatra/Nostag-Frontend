@@ -1,18 +1,22 @@
 {
   "expo": {
-    "name": "NoStagClean",
-    "slug": "NoStagClean",
+    "name": "No Stag",
+    "slug": "NoStag",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/icon.png",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
     "ios": {
+      "buildNumber": "1.0.0",
       "supportsTablet": true,
       "bundleIdentifier": "com.yourname.yourapp",
       "infoPlist": {
@@ -26,17 +30,21 @@
       }
     },
     "android": {
+      "versionCode": 1,
       "intentFilters": [
         {
           "action": "VIEW",
           "autoVerify": true,
           "data": [
             {
-              "scheme": "rzp_test_RojQ0YJR830wCR", 
+              "scheme": "rzp_test_RojQ0YJR830wCR",
               "host": "rzp.io"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ],
       "permissions": [
@@ -56,6 +64,11 @@
     },
     "web": {
       "favicon": "./assets/icon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3f1516d6-7da1-415f-b3c5-6d95b4f2ca17"
+      }
     }
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import { 
   View, 
   Text, 
@@ -17,8 +17,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import colors from '../../constants/colours'; 
 import { API_BASE_URL } from '../../constants/config'; 
+import { UserContext } from '../../context/UserContext';
 
 export default function ProfileSetupScreen({ navigation }) {
+  const {setUser} = useContext(UserContext);
   const [name, setName] = useState('');
   const [height, setHeight] = useState(''); 
   const [gender, setGender] = useState(null); 
@@ -91,6 +93,7 @@ export default function ProfileSetupScreen({ navigation }) {
         const currentUser = storedUser ? JSON.parse(storedUser) : {};
         const updatedUser = { ...currentUser, ...data };
         await AsyncStorage.setItem('user', JSON.stringify(updatedUser));
+        setUser(updatedUser);
 
         setLoading(false);
         navigation.navigate('PhotoVerification', { userRole: gender });
